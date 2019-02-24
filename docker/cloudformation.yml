@@ -1,0 +1,183 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ECS cluster and ECR registries to support running Jenkins build agents on ECS.
+
+Outputs:
+  MasterIamRole:
+    Description: Name of IAM role to assign to Jenkins master
+    Value: !Ref 'JenkinsMasterInstanceProfile'
+  AgentTaskRoleArn:
+    Description: ARN of IAM role that Jenkins agents run with (input into 'Task Role ARN' in Jenkins template)
+    Value: !GetAtt 'JenkinsAgentTaskRole.Arn'
+  AgentExecutionRoleArn:
+    Description: ARN of IAM role that Jenkins agents run with (input into 'Execution Role ARN' in Jenkins template)
+    Value: !GetAtt 'JenkinsAgentExecutionRole.Arn'
+  JenkinsSbtTaskDefinitionArn:
+    Description: ARN of the ECS task definition to use for the 'sbt' Jenkins template
+    Value: !Ref 'JenkinsSbtTaskDefinition'
+
+Resources:
+  JenkinsSbtContainerRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: jenkins/sbt
+
+  JenkinsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: jenkins
+
+  JenkinsMasterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: jenkins-master
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: '/'
+
+  JenkinsMasterInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    DependsOn:
+      - JenkinsMasterRole
+    Properties:
+      InstanceProfileName: jenkins-master
+      Roles:
+        - !Ref 'JenkinsMasterRole'
+
+  JenkinsMasterEcsPolicy:
+    Type: AWS::IAM::Policy
+    DependsOn:
+      - JenkinsCluster
+    Properties:
+      PolicyName: jenkins-ecs-launch
+      Roles:
+        - !Ref 'JenkinsMasterRole'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - ecs:DescribeTasks
+              - ecs:DescribeTaskDefinition
+              - ecs:ListClusters
+              - ecs:ListTaskDefinitions
+              - ecs:RegisterTaskDefinition
+            Resource:
+              - '*'
+          - Effect: Allow
+            Action:
+              - ecs:RunTask
+            Resource:
+              # Jenkins created task definitions
+              - !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/jenkins-ecs-*'
+              # CF managed task definitions
+              - !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/${AWS::StackName}-Jenkins*'
+          - Effect: Allow
+            Action:
+              - iam:GetRole
+              - iam:PassRole
+            Resource:
+              - !GetAtt 'JenkinsAgentTaskRole.Arn'
+              - !GetAtt 'JenkinsAgentExecutionRole.Arn'
+          - Effect: Allow
+            Action:
+              - ecs:StopTask
+            Resource:
+              - '*'
+            Condition:
+              ArnEquals:
+                'ecs:cluster': !GetAtt 'JenkinsCluster.Arn'
+
+  JenkinsAgentTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: jenkins-agent-task
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - ecs-tasks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: '/'
+
+  JenkinsAgentTaskPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: jenkins-agent-task
+      Roles:
+      - !Ref 'JenkinsAgentTaskRole'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+            - ecs:DescribeTaskDefinition
+            Resource:
+            - '*'
+
+  JenkinsAgentExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: jenkins-agent-execution
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - ecs-tasks.amazonaws.com
+            Action:
+            - sts:AssumeRole
+      Path: '/'
+
+  JenkinsAgentExecutionPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: jenkins-agent-execution
+      Roles:
+      - !Ref 'JenkinsAgentExecutionRole'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+            - ecs:DescribeTaskDefinition
+            Resource:
+            - '*'
+          - Effect: Allow
+            Action:
+            - ecr:GetAuthorizationToken
+            Resource:
+            - '*'
+          - Effect: Allow
+            Action:
+            - ecr:BatchGetImage
+            - ecr:GetDownloadUrlForLayer
+            - ecr:BatchCheckLayerAvailability
+            Resource:
+            # wildcard on any ECR repo starting with jenkins/
+            - !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/jenkins/*'
+
+  JenkinsSbtTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Cpu: 512
+      Memory: 1024
+      ExecutionRoleArn: !GetAtt 'JenkinsAgentExecutionRole.Arn'
+      TaskRoleArn: !GetAtt 'JenkinsAgentTaskRole.Arn'
+      RequiresCompatibilities:
+        - FARGATE
+      NetworkMode: awsvpc
+      ContainerDefinitions:
+        - Name: jenkins-sbt
+          Image: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/jenkins/sbt'

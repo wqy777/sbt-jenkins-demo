@@ -1,5 +1,7 @@
 pipeline {
-  agent any
+  agent {
+    label 'ecs-sbt'
+  }
 
   tools {
     jdk '8'
