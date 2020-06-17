@@ -1,5 +1,11 @@
 pipeline {
 
+     agent {
+      kubernetes {
+        label 'sample-app'
+        defaultContainer 'jnlp'
+      }
+   }
    stage('Get a Golang project') {
             git url: 'https://github.com/hashicorp/terraform.git'
             container('golang') {
